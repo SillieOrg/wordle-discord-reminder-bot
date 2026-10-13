@@ -32,12 +32,13 @@ EventBridge (cron: 9 PM UK time daily, configurable)
 
 ## CI/CD (GitHub Actions)
 
-Four workflows are included in `.github/workflows/`:
+Five workflows are included in `.github/workflows/`:
 
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `ci.yml` | Every push and pull request | Installs `pytest` and runs the unit-test suite |
 | `deploy.yml` | Push to `main` | Runs tests, then deploys via Terraform |
+| `teardown.yml` | Manual (`workflow_dispatch`), from `main` only | Destroys Terraform-managed AWS resources and deletes the application's CloudWatch logs after confirmation |
 | `debug-messages.yml` | Manual (`workflow_dispatch`) | Invokes Lambda in `dry_run` or `debug_only` mode and prints CloudWatch log tail |
 | `pages.yml` | Pushes to `main` that change `docs/**`, or manual trigger | Deploys `docs/` to GitHub Pages |
 
@@ -122,6 +123,29 @@ To destroy:
 ```bash
 terraform destroy
 ```
+
+#### Tear down using GitHub Actions
+
+1. Open **Actions → Tear Down AWS Resources → Run workflow**.
+2. Select the `main` branch and enter **DELETE** in the confirmation field.
+3. Run the workflow. This permanently deletes the Lambda function, its IAM role
+   and policy attachment, EventBridge rule and target, Lambda invocation permission,
+   and the function's CloudWatch log group (including all logs).
+
+The workflow uses the same repository secrets and Terraform state as deployment.
+The AWS credentials also need permissions to delete the managed resources and
+`logs:DescribeLogGroups` / `logs:DeleteLogGroup` for log cleanup. Deploy and teardown
+runs share a concurrency group so they cannot change infrastructure simultaneously.
+The log group is created automatically by Lambda and is not tracked in Terraform,
+so the workflow removes it separately; an already-absent log group is skipped.
+
+The existing `TF_STATE_BUCKET` and its state file are **preserved** because the bucket
+is external to this application and may be shared. AWS-managed IAM policies and the
+deployment IAM user's credentials are also preserved. This workflow targets the
+Terraform deployment, not a separately deployed SAM/CloudFormation stack; use
+`sam delete` for that stack and remove its retained CloudWatch logs separately.
+A subsequent push to `main` will deploy the application again; disable the Deploy
+workflow first if you want it to stay removed.
 
 ### Option B — AWS SAM (manual)
 
@@ -250,6 +274,7 @@ wordle-discord-reminder-bot/
 │   └── workflows/
 │       ├── ci.yml              # Run tests on every push / PR
 │       ├── deploy.yml          # Terraform deploy on push to main
+│       ├── teardown.yml        # Confirmed manual AWS teardown
 │       ├── debug-messages.yml  # Manual Lambda debug/dry-run invocation
 │       └── pages.yml           # Deploy docs/ to GitHub Pages
 ├── terraform/
