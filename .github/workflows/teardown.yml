@@ -1,0 +1,85 @@
+name: Tear Down AWS Resources
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type DELETE to permanently delete the application and its CloudWatch logs.'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wordle-aws-infrastructure
+  cancel-in-progress: false
+
+jobs:
+  teardown:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate confirmation and branch
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          if [[ "$CONFIRMATION" != "DELETE" || "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Run this workflow from main and type DELETE to confirm."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.5"
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: terraform
+        env:
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=$TF_STATE_BUCKET" \
+            -backend-config="region=$AWS_REGION"
+
+      - name: Identify application log group
+        id: logs
+        working-directory: terraform
+        run: |
+          FUNCTION_NAME=$(terraform output -json | python3 -c \
+            'import json, sys; print(json.load(sys.stdin).get("lambda_function_name", {}).get("value", ""))')
+          if [[ -n "$FUNCTION_NAME" ]]; then
+            echo "log_group=/aws/lambda/$FUNCTION_NAME" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Terraform Destroy
+        working-directory: terraform
+        env:
+          TF_VAR_aws_region: ${{ secrets.AWS_REGION }}
+          TF_VAR_discord_token: ${{ secrets.DISCORD_TOKEN }}
+          TF_VAR_channel_id: ${{ secrets.CHANNEL_ID }}
+          TF_VAR_user_ids: ${{ secrets.USER_IDS }}
+        run: terraform destroy -auto-approve -input=false
+
+      - name: Delete application CloudWatch logs
+        if: steps.logs.outputs.log_group != ''
+        env:
+          LOG_GROUP: ${{ steps.logs.outputs.log_group }}
+        run: |
+          LOG_GROUPS=$(aws logs describe-log-groups \
+            --log-group-name-prefix "$LOG_GROUP" \
+            --query 'logGroups[].logGroupName' \
+            --output json)
+          if python3 -c 'import json, os, sys; sys.exit(0 if os.environ["LOG_GROUP"] in json.load(sys.stdin) else 1)' <<< "$LOG_GROUPS"; then
+            aws logs delete-log-group --log-group-name "$LOG_GROUP"
+          fi
