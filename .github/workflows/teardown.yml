@@ -33,6 +33,7 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "~1.5"
+          terraform_wrapper: false
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -56,8 +57,10 @@ jobs:
         working-directory: terraform
         run: |
           FUNCTION_NAME=$(terraform output -json | python3 -c \
-            'import json, sys; print(json.load(sys.stdin).get("lambda_function_name", {}).get("value", "WordleReminderBot"))')
-          echo "log_group=/aws/lambda/$FUNCTION_NAME" >> "$GITHUB_OUTPUT"
+            'import json, sys; print(json.load(sys.stdin).get("lambda_function_name", {}).get("value", ""))')
+          if [[ -n "$FUNCTION_NAME" ]]; then
+            echo "log_group=/aws/lambda/$FUNCTION_NAME" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Terraform Destroy
         working-directory: terraform
@@ -69,6 +72,7 @@ jobs:
         run: terraform destroy -auto-approve -input=false
 
       - name: Delete application CloudWatch logs
+        if: steps.logs.outputs.log_group != ''
         env:
           LOG_GROUP: ${{ steps.logs.outputs.log_group }}
         run: |

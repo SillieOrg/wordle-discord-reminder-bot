@@ -138,6 +138,9 @@ The AWS credentials also need permissions to delete the managed resources and
 runs share a concurrency group so they cannot change infrastructure simultaneously.
 The log group is created automatically by Lambda and is not tracked in Terraform,
 so the workflow removes it separately; an already-absent log group is skipped.
+Log cleanup is skipped if the state has no Lambda function-name output, rather
+than guessing a name and risking deletion of another deployment's logs. If log
+cleanup fails after Terraform finishes, remove that retained log group manually.
 
 The existing `TF_STATE_BUCKET` and its state file are **preserved** because the bucket
 is external to this application and may be shared. AWS-managed IAM policies and the
